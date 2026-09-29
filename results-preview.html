@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f5f1">
+  <title>Instagram Capture — example results</title>
+  <style>
+    :root { color-scheme: light; --ink:#1a2433; --muted:#697277; --coral:#de574a; --blush:#ffebe3; --paper:#f6f5f1; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#dcdedc; color:var(--ink); font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .phone { width:min(100%,430px); min-height:100vh; margin:auto; background:var(--paper); box-shadow:0 24px 80px #17263820; padding-bottom:28px; }
+    .top { position:sticky; top:0; z-index:2; padding:19px 20px 13px; background:#f6f5f1ed; backdrop-filter:blur(16px); border-bottom:1px solid #e8e7e0; }
+    .top small { display:block; font-size:11px; letter-spacing:2px; font-weight:800; color:var(--coral); }
+    h1 { margin:5px 0 0; font-size:28px; letter-spacing:-.8px; }
+    main { padding:21px 20px; }
+    h2 { font-size:23px; line-height:1.18; letter-spacing:-.5px; margin:0 0 10px; }
+    p { color:var(--muted); margin:0 0 16px; }
+    .notice { background:var(--blush); color:var(--coral); padding:13px 14px; border-radius:14px; font-size:11px; font-weight:800; letter-spacing:.3px; margin:19px 0; }
+    .export { background:var(--ink); color:white; border-radius:16px; padding:17px; text-align:center; font-weight:700; margin:14px 0 20px; }
+    .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin-bottom:24px; }
+    .stat,.card { background:white; border-radius:17px; }
+    .stat { padding:13px 11px; }
+    .stat strong { display:block; font-size:24px; letter-spacing:-.6px; }
+    .stat span { display:block; color:var(--muted); font-size:9px; font-weight:800; letter-spacing:.2px; margin-top:5px; }
+    h3 { font-size:16px; margin:0 0 12px; }
+    .card { margin-bottom:11px; padding:17px; box-shadow:0 1px 2px #1a243307; }
+    .card-header,.card-footer { display:flex; align-items:center; gap:9px; }
+    .avatar { display:grid; place-items:center; width:30px; height:30px; border-radius:50%; background:#e8e8e5; color:#7d8384; font-size:16px; }
+    .account { font-size:14px; font-weight:700; }
+    .pill { margin-left:auto; border-radius:999px; background:var(--blush); color:var(--coral); font-size:9px; font-weight:800; padding:6px 9px; }
+    .pill.post { background:var(--paper); color:var(--muted); }
+    .card p { font-size:12px; margin:12px 0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .card-footer { font-size:12px; color:var(--muted); }
+    .card-footer span:last-child { margin-left:auto; color:var(--coral); font-weight:700; }
+    .detail { font-size:12px; color:var(--ink); font-weight:600; margin:6px 0; }
+    .interaction { font-size:12px; color:var(--muted); margin:4px 0 12px; }
+    .footnote { font-size:12px; margin-top:20px; }
+  </style>
+</head>
+<body>
+  <div class="phone">
+    <div class="top"><small>INSTAGRAM CAPTURE · PREVIEW</small><h1>Your results</h1></div>
+    <main>
+      <h2>A window into what you saw.</h2>
+      <p>These records stay on your iPhone until you export or delete them. Swipe left on a real saved post to reveal Delete. The export is not automatically anonymised.</p>
+      <div class="notice">✦ EXAMPLE DATA — fictional and never exported</div>
+      <div class="export">↑ Export my results</div>
+      <div class="stats"><div class="stat"><strong>3</strong><span>POSTS</span></div><div class="stat"><strong>45s</strong><span>VISIBLE</span></div><div class="stat"><strong>1</strong><span>VIDEOS</span></div></div>
+      <h3>Example feed</h3>
+      <div class="card"><div class="card-header"><div class="avatar">◉</div><span class="account">city_archive</span><span class="pill post">POST</span></div><p>Example of a saved post</p><div class="detail">◉ 14s visible</div><div class="interaction">Home · Followed account</div><div class="detail">Liked: Yes · Saved: Yes · Commented: No · Interacted: Yes</div><div class="interaction">Comments opened: No · Like 1 · Save 1 · Follow 0</div><div class="card-footer"><span>◷ Example time</span><span>Sample only</span></div></div>
+      <div class="card"><div class="card-header"><div class="avatar">◉</div><span class="account">garden_notes</span><span class="pill">SUGGESTED</span></div><p>Example of a saved Reel</p><div class="detail">◉ 24s visible · ▷ 60% watched</div><div class="interaction">Reels · Suggested account</div><div class="detail">Liked: No · Saved: No · Commented: No · Interacted: Yes</div><div class="interaction">Comments opened: Yes · Media taps 0 · Swipes 0 · Pauses 0</div><div class="card-footer"><span>◷ Example time</span><span>Sample only</span></div></div>
+      <div class="card"><div class="card-header"><div class="avatar">◉</div><span class="account">studio_example</span><span class="pill">SPONSORED</span></div><p>Post link unavailable · observation saved</p><div class="detail">◉ 7s visible</div><div class="interaction">Home · Not followed account</div><div class="detail">Liked: No · Saved: No · Commented: Yes · Interacted: Yes</div><div class="interaction">Comment attempted: “Example comment” · Follow 1</div><div class="card-footer"><span>◷ Example time</span><span>Sample only</span></div></div>
+      <p class="footnote">This fictional preview shows the result fields. Real results may include a caption, hashtags, a post link, and first-viewed time with seconds. Export adds separate durationViewedSeconds, commentsOpened and suspectedFoodRelated variables. The last is only a text-based guess. Review and delete any post you do not want to share. Links and submitted comment text are included by default, and can be turned off before export.</p>
+    </main>
+  </div>
+</body>
+</html>
