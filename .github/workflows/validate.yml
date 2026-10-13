@@ -22,7 +22,7 @@ jobs:
       - run: node tests/observer.test.cjs
 
   simulator-build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
