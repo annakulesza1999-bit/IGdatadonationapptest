@@ -618,6 +618,12 @@ private struct PrivacyScreen: View {
                               systemImage: "record.circle")
                             .font(.headline).foregroundStyle(Theme.ink)
                         Divider()
+                        NavigationLink {
+                            DiagnosticsScreen(browser: browser)
+                        } label: {
+                            Label("App log", systemImage: "list.bullet.rectangle")
+                        }
+                        .foregroundStyle(Theme.ink)
                         Button("Clear Instagram browser login") { confirmingLogin = true }
                             .foregroundStyle(Theme.ink)
                         Button("Delete saved results") { confirmingDelete = true }
@@ -625,6 +631,7 @@ private struct PrivacyScreen: View {
                         Button("Withdraw consent") {
                             store.setRecording(false)
                             browser.setRecording(false)
+                            browser.clearDiagnostics()
                             UserDefaults.standard.set(0, forKey: "captureConsentVersion")
                             hasConsented = false
                         }
@@ -652,6 +659,58 @@ private struct PrivacyScreen: View {
                 Button("Delete saved results", role: .destructive) { store.deleteAll() }
             }
         }
+    }
+}
+
+private struct DiagnosticsScreen: View {
+    @ObservedObject var browser: InstagramWebSession
+    @State private var exportURL: URL?
+    @State private var showingShare = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        List {
+            Section {
+                Text("A technical log for troubleshooting missing links and recording interruptions. It contains timestamps, fixed technical messages and counts—not usernames, post links, captions, comments, cookies or passwords. Timestamps can still reveal when you used the app.")
+                    .font(.subheadline)
+                Text("Only the latest 250 entries from this app session are kept in memory. Repeated messages are limited. This log is separate from research exports and is only shared if you choose to share it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Keep session log", isOn: Binding(
+                    get: { browser.diagnosticLogging },
+                    set: { browser.setDiagnosticLogging($0) }))
+                Text("\(browser.pendingLinkCount) pending identities · \(browser.metadataCount) cached post identities")
+                    .font(.caption)
+                Button("Share diagnostic log") {
+                    do {
+                        exportURL = try browser.exportDiagnostics()
+                        showingShare = true
+                    } catch { errorMessage = "The diagnostic file could not be created. Please try again." }
+                }
+                .disabled(browser.diagnosticEntries.isEmpty)
+                Button("Clear log", role: .destructive) { browser.clearDiagnostics() }
+                Text("Clearing also removes the app’s temporary diagnostic file. It cannot delete copies you already shared.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Latest events first") {
+                if browser.diagnosticEntries.isEmpty { Text("No diagnostic events in this session.") }
+                ForEach(Array(browser.diagnosticEntries.reversed())) { entry in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(entry.event.rawValue)
+                        if let count = entry.count { Text("Count: \(count)").font(.caption) }
+                        Text(entry.at, format: .dateTime.year().month().day().hour().minute().second())
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("App log")
+        .sheet(isPresented: $showingShare) {
+            if let exportURL { ShareSheet(fileURL: exportURL) }
+        }
+        .alert("Could not export log", isPresented: Binding(
+            get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+                Button("OK") { errorMessage = nil }
+            } message: { Text(errorMessage ?? "Please try again.") }
     }
 }
 

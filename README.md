@@ -2,7 +2,17 @@
 
 An independent research prototype that opens Instagram's mobile website inside an iPhone app and saves observations locally. It is not affiliated with Instagram or Meta.
 
-## What changed in version 1.9
+## What changed in version 1.10 (build 11)
+
+- The page observer sends late captions, media identifiers and video duration even when the author and link have not changed. It sends only changed details during browsing, and refreshes identification on resume without replaying impressions or interactions.
+- Returning from Results or the background retries pending observations against already-cached metadata. Observation UUIDs are normalised before matching native records. Metadata-only retries cannot recreate a deleted record.
+- Matching caches are bounded and evict their oldest entries, rather than permanently rejecting new entries when full. Navigation still clears page-specific caches. Ambiguous matches remain unlinked.
+- Open the recording control, then **Privacy & controls → App log**. The log records fixed technical messages, timestamps and counts for missing identification clues, missing/ambiguous metadata, recovery, navigation and parser failures. It contains no post URLs, handles, captions, comment text, response bodies or credentials.
+- The log is separate from research exports, is limited to 250 in-memory entries per app session, and rate-limits repeating messages. **Share diagnostic log** creates a JSON file only on request. **Clear log**, disabling logging or withdrawing consent clears the session log; clearing also removes the app's temporary diagnostic file. Copies already shared cannot be recalled. Diagnostic timestamps still reveal app-use times.
+- The JavaScript regression suite covers late details, resume refresh, deduplication and privacy-safe parser diagnostics. Native compilation and live signed-in behaviour require macOS/Xcode and an iPhone; passing synthetic tests does not establish complete URL capture on Instagram.
+- GitHub Actions runs the synthetic recorder suite and a simulator build on pushes and pull requests. The build checks Swift compilation, not live Instagram behaviour or native UI tests. No Instagram or Apple signing credentials are used.
+
+## Earlier changes in version 1.9
 
 - The results list is compact. The app no longer captures or exports post media. Previously stored media files are removed after the update opens, while the text and interaction records remain.
 - A post's **commentsOpened** field is a yes/no value. Earlier numeric comment-open records migrate to yes if at least one opening was observed. The detailed interaction log no longer contains repeat comment-open events.

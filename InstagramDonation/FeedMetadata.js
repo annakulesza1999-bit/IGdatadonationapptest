@@ -3,9 +3,20 @@
    never sends raw JSON, credentials, cookies, headers, or media to native code. */
 (() => {
   if (!["instagram.com", "www.instagram.com"].includes(location.hostname)) return;
-  if (window.__feedWindowMetadataV6) return;
-  window.__feedWindowMetadataV6 = true;
+  if (window.__feedWindowMetadataV7) return;
+  window.__feedWindowMetadataV7 = true;
   const postPath = /^[A-Za-z0-9_-]{1,64}$/;
+  const lastDiagnostic = new Map();
+  function diagnostic(code) {
+    const now = Date.now();
+    if (lastDiagnostic.has(code) && now - lastDiagnostic.get(code) < 10000) return;
+    lastDiagnostic.set(code, now);
+    // Fixed codes only: never send response bodies, URLs or exception messages.
+    try { window.webkit.messageHandlers.feedMetadata.postMessage({
+      event: "metadata_diagnostic", code
+    }); } catch (_) {}
+  }
+  diagnostic("reader_ready");
 
   function postLink(raw) {
     try {
@@ -174,11 +185,13 @@
       }
     }
     walk(json, 0, "Home", false);
+    if (budget <= 0) diagnostic("scan_limit");
   }
 
   function inspectWhenIdle(input) {
     const task = () => {
-      try { inspect(typeof input === "function" ? input() : input); } catch (_) {}
+      try { inspect(typeof input === "function" ? input() : input); }
+      catch (_) { diagnostic("parse_or_scan_failed"); }
     };
     if (typeof requestIdleCallback === "function") {
       requestIdleCallback(task, { timeout: 1800 });
@@ -216,7 +229,8 @@
       const result = originalFetch.apply(this, args);
       const url = typeof args[0] === "string" ? args[0] : args[0]?.url;
       if (interesting(url)) {
-        result.then(response => response.clone().json().then(inspectWhenIdle).catch(() => {}))
+        result.then(response => response.clone().json().then(inspectWhenIdle)
+          .catch(() => diagnostic("response_parse_failed")))
           .catch(() => {});
       }
       return result;
@@ -235,7 +249,7 @@
         try {
           const value = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
           inspectWhenIdle(value);
-        } catch (_) {}
+        } catch (_) { diagnostic("response_parse_failed"); }
       }, { once: true });
     }
     return originalSend.apply(this, args);

@@ -1,0 +1,36 @@
+name: Validate Instagram Capture
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recorder-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: node tests/observer.test.cjs
+
+  simulator-build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: xcodebuild -version
+      - name: Build for iPhone Simulator without signing credentials
+        run: >-
+          xcodebuild -project InstagramDonation.xcodeproj
+          -target InstagramDonation -configuration Debug
+          -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
