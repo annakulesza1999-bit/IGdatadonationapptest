@@ -8,7 +8,9 @@ const metadataSource = fs.readFileSync(path.join(__dirname, '../InstagramDonatio
 
 function scenario({ route = '/', href = '/p/example_123/', visible = true,
                     video = false, photo = false, heading = 'city_archive', articleInDOM = true,
-                    accountHref = '/city_archive/', autoEnable = true } = {}) {
+                    accountHref = '/city_archive/', autoEnable = true,
+                    movieDuration = 10,
+                    moviePoster = 'https://scontent.cdninstagram.com/v/t51.2885-15/1234567890123_s720x720_n.jpg?size=large' } = {}) {
   let now = 0;
   let currentHref = href;
   const messages = [];
@@ -37,8 +39,8 @@ function scenario({ route = '/', href = '/p/example_123/', visible = true,
     querySelectorAll: selector => selector === 'a[href]' ? [accountLink] : [followButton]
   };
   const movie = {
-    tagName: 'VIDEO', paused: true, currentTime: 0, duration: 10,
-    poster: 'https://scontent.cdninstagram.com/v/t51.2885-15/1234567890123_s720x720_n.jpg?size=large',
+    tagName: 'VIDEO', paused: true, currentTime: 0, duration: movieDuration,
+    poster: moviePoster,
     parentElement: null, handlers: {},
     getBoundingClientRect: () => ({ left: 0, right: 350, top: 100, bottom: 430,
       width: 350, height: 330 }),
@@ -274,6 +276,42 @@ assert(lateLink.messages.some(x => x.event === 'relationship' &&
   x.permalink === 'https://www.instagram.com/p/late_123/'),
   'a post URL exposed later in a data attribute must update its result');
 
+// Identification may become available without the account or permalink changing.
+const lateDetails = scenario({ href: null, video: true, movieDuration: NaN, moviePoster: '' });
+lateDetails.step(1000); lateDetails.step(1000);
+const firstLateDetails = lateDetails.messages.find(x => x.event === 'impression');
+assert.equal(firstLateDetails.videoDuration, undefined);
+lateDetails.movie.duration = 27;
+lateDetails.movie.poster = 'https://scontent.cdninstagram.com/v/8765432109876_n.jpg';
+const oldDetailsQuery = lateDetails.article.querySelector.bind(lateDetails.article);
+lateDetails.article.querySelector = selector => selector.includes("post-caption")
+  ? { innerText: 'A late caption #pasta' } : oldDetailsQuery(selector);
+lateDetails.step(1000);
+const detailUpdate = lateDetails.messages.find(x => x.event === 'relationship' && x.videoDuration === 27);
+assert(detailUpdate, 'late duration and media keys must be sent even if account/link are unchanged: ' + JSON.stringify(lateDetails.messages));
+assert.equal(detailUpdate.observationId, firstLateDetails.observationId);
+assert.equal(detailUpdate.caption, 'A late caption #pasta');
+assert(detailUpdate.mediaKeys.includes('m_8765432109876'));
+assert(!('seconds' in detailUpdate) && !('action' in detailUpdate));
+assert.equal(lateDetails.messages.filter(x => x.event === 'impression').length, 1);
+const detailUpdates = lateDetails.messages.filter(x => x.event === 'relationship').length;
+lateDetails.step(1000);
+assert.equal(lateDetails.messages.filter(x => x.event === 'relationship').length, detailUpdates,
+  'unchanged details must not be resent every tick');
+lateDetails.window.__instagramCaptureSetEnabled(false);
+lateDetails.movie.duration = 28;
+lateDetails.step(5000);
+assert.equal(lateDetails.messages.filter(x => x.event === 'relationship').length, detailUpdates);
+lateDetails.window.__instagramCaptureSetEnabled(true);
+assert(lateDetails.messages.some(x => x.event === 'relationship' && x.videoDuration === 28),
+  'resume must refresh details changed while Results was open');
+const resumeCount = lateDetails.messages.filter(x => x.event === 'relationship').length;
+lateDetails.window.__instagramCaptureSetEnabled(false);
+lateDetails.window.__instagramCaptureSetEnabled(true);
+assert.equal(lateDetails.messages.filter(x => x.event === 'relationship').length, resumeCount + 1,
+  'resume must resend even unchanged identity clues for native cache recovery');
+assert.equal(lateDetails.messages.filter(x => x.event === 'impression').length, 1);
+
 // Reproduces the reported mobile Home layout: a visible video card with no post link.
 const linkless = scenario({ href: null, video: true });
 linkless.step(1000);
@@ -409,13 +447,18 @@ for (const options of [
     addEventListener(name, handler) { if (name === 'DOMContentLoaded') this.ready = handler; }
   };
   const window = {
-    webkit: { messageHandlers: { feedMetadata: { postMessage: value => received.push(value) } } },
+    webkit: { messageHandlers: { feedMetadata: { postMessage: value => {
+      if (value.event === 'metadata_diagnostic') diagnostics.push(value);
+      else received.push(value);
+    } } } },
     fetch: async () => currentResponse
   };
   class XHR { open() {} send() {} addEventListener() {} }
   const context = { window, document, setTimeout: fn => scheduled.push(fn), location: { hostname: 'www.instagram.com',
     href: 'https://www.instagram.com/' }, URL, XMLHttpRequest: XHR };
+  const diagnostics = [];
   vm.runInNewContext(metadataSource, context);
+  assert.equal(diagnostics[0].code, 'reader_ready');
   document.ready();
   while (scheduled.length) scheduled.shift()();
   assert.equal(received.length, 1, 'preloaded feed metadata is available on first load');
@@ -450,5 +493,17 @@ for (const options of [
   assert.equal(received.length, 1, 'nested suggested posts are extracted');
   assert.equal(received[0].label, 'Suggested');
   assert.equal(received[0].permalink, 'https://www.instagram.com/reel/suggested_123/');
-  console.log('Recorder checks passed: startup enable, scan errors, 70 reused cards, pause and resume, identity updates, interactions, metadata, and no image capture.');
+  currentResponse = { clone: () => ({ json: async () => { throw new Error('PRIVATE_RESPONSE_TEXT'); } }) };
+  await window.fetch('https://www.instagram.com/graphql/query');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert(diagnostics.some(x => x.code === 'response_parse_failed'));
+  const diagnosticCount = diagnostics.length;
+  await window.fetch('https://www.instagram.com/graphql/query');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(diagnostics.length, diagnosticCount, 'repeating diagnostic errors are rate limited');
+  for (const entry of diagnostics) {
+    assert.deepEqual(Object.keys(entry).sort(), ['code', 'event']);
+    assert(!JSON.stringify(entry).includes('PRIVATE_RESPONSE_TEXT'));
+  }
+  console.log('Recorder checks passed: late identity details, resume refresh, private diagnostics, startup, 70 reused cards, interactions, metadata, and no image capture.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

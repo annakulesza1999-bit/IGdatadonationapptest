@@ -2,6 +2,39 @@ import SwiftUI
 import UIKit
 import WebKit
 
+// Only allowlisted technical events enter the log. No free-form page text or IDs.
+enum CaptureDiagnosticEvent: String, Codable {
+    case started = "Diagnostic session started"
+    case paused = "Recording suspended while app screen or background is active"
+    case resumed = "Recording resumed; retrying cached post identities"
+    case navigation = "Page navigation; temporary matching cache reset"
+    case readerReady = "Metadata reader started"
+    case readerMissing = "Metadata reader missing from app bundle"
+    case observerMissing = "Page observer missing from app bundle"
+    case observerFailed = "Page observer reported an error"
+    case bridgeFailed = "Could not set page recording state"
+    case parseFailed = "Metadata response could not be parsed"
+    case scanFailed = "Preloaded metadata could not be parsed or scanned"
+    case scanLimited = "Metadata scan reached its processing limit"
+    case noIdentity = "Missing link: no usable identification clues yet"
+    case metadataMissing = "Missing link: no matching metadata yet"
+    case ambiguous = "Missing link: multiple candidate posts; no link assigned"
+    case accountMismatch = "Missing link: candidate author conflicts with observed author"
+    case matched = "Missing post link resolved"
+    case pendingEvicted = "Oldest unresolved identity removed from bounded cache"
+    case metadataEvicted = "Oldest metadata removed from bounded cache"
+    case retryFinished = "Cached identities retried; recovered count"
+    case navigationFailed = "Instagram page navigation failed"
+    case processRestart = "Web content process terminated; reloading"
+}
+
+struct CaptureDiagnosticEntry: Identifiable, Codable {
+    let id: UUID
+    let at: Date
+    let event: CaptureDiagnosticEvent
+    let count: Int?
+}
+
 private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
     weak var target: WKScriptMessageHandler?
 
@@ -28,6 +61,17 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published private(set) var metadataCount = 0
     @Published private(set) var recorderError: String?
     @Published private(set) var pageObscured = false
+    @Published private(set) var diagnosticEntries: [CaptureDiagnosticEntry] = []
+    @Published private(set) var diagnosticLogging = true
+    @Published private(set) var pendingLinkCount = 0
+    private var diagnosticTimes: [CaptureDiagnosticEvent: Date] = [:]
+    private var pendingReasons: [String: CaptureDiagnosticEvent] = [:]
+    private var pendingOrder: [String] = []
+    private var metadataOrder: [String] = []
+    private var pendingIdentityRetry: Task<Void, Never>?
+    private var diagnosticURL: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("instagram-capture-diagnostics.json")
+    }
 
     weak var store: DonationStore?
     let webView: WKWebView
@@ -65,12 +109,16 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        clearDiagnostics()
+        log(.started)
         donationHandler.target = self
         metadataHandler.target = self
         if observerSource == nil {
             status = "Recording script missing from the app bundle"
             recorderError = status
+            log(.observerMissing)
         }
+        if metadataSource == nil { log(.readerMissing) }
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -88,6 +136,7 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func setRecording(_ enabled: Bool) {
         let desired = enabled && !pageObscured ? "true" : "false"
+        if desired == "true" { retryPendingIdentities() }
         let script = "typeof window.__instagramCaptureSetEnabled === 'function' " +
             "? window.__instagramCaptureSetEnabled(\(desired)) " +
             ": (window.__feedWindowEnabled = \(desired))"
@@ -97,12 +146,15 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
                 let message = "Could not set page recording: \(error.localizedDescription)"
                 self.status = message
                 self.recorderError = message
+                self.log(.bridgeFailed)
             }
         }
     }
 
     func setPageObscured(_ obscured: Bool) {
+        let changed = pageObscured != obscured
         pageObscured = obscured
+        if changed { log(obscured ? .paused : .resumed) }
         if obscured { pageRecording = false }
         setRecording(store?.isRecording == true)
     }
@@ -133,9 +185,26 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
               ),
               let payload = message.body as? [String: Any] else { return }
         if message.name == "feedMetadata" {
+            if payload["event"] as? String == "metadata_diagnostic" {
+                switch payload["code"] as? String {
+                case "reader_ready": log(.readerReady)
+                case "response_parse_failed": log(.parseFailed)
+                case "parse_or_scan_failed": log(.scanFailed)
+                case "scan_limit": log(.scanLimited)
+                default: break
+                }
+                return
+            }
             guard payload["event"] as? String == "metadata",
                   let permalink = payload["permalink"] as? String,
-                  let code = postCode(permalink), metadataByCode.count < 3_000 else { return }
+                  let code = postCode(permalink) else { return }
+            if metadataByCode[code] == nil {
+                if metadataOrder.count >= 3_000 {
+                    removeMetadata(metadataOrder.removeFirst())
+                    log(.metadataEvicted)
+                }
+                metadataOrder.append(code)
+            } else { removeMetadata(code) }
             metadataByCode[code] = payload
             for key in validatedKeys(payload["mediaKeys"]) {
                 codesByMediaKey[key, default: []].insert(code)
@@ -155,16 +224,7 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
                         "observationId": post.observationId, "permalink": permalink]
                     store?.record(enriched(observation, with: payload))
                 }
-                var matchedIDs: [String] = []
-                for (id, observation) in unmatchedObservations {
-                    if let metadata = metadataFor(observation) {
-                        var update = enriched(observation, with: metadata)
-                        update["event"] = "relationship"
-                        store?.record(update)
-                        matchedIDs.append(id)
-                    }
-                }
-                for id in matchedIDs { unmatchedObservations.removeValue(forKey: id) }
+                scheduleIdentityRetry()
             }
             return
         }
@@ -180,6 +240,7 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
                 let message = "Page recorder error: \(String(failure.prefix(160)))"
                 recorderError = message
                 status = message
+                log(.observerFailed)
                 return
             }
             if pageRecording != expected { setRecording(expected) }
@@ -196,24 +257,160 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
             return
         }
         guard recordingAllowed else { return }
-        let metadata = metadataFor(payload)
-        let merged = metadata.map { enriched(payload, with: $0) } ?? payload
-        if (payload["permalink"] as? String ?? "").isEmpty && metadata == nil,
-           let id = payload["observationId"] as? String, UUID(uuidString: id) != nil {
-            // Later visible-time messages are intentionally small. Keep the
-            // identity keys from the impression until matching metadata arrives.
-            let hasMediaKey = !validatedKeys(payload["mediaKeys"]).isEmpty
-            let hasAccount = !(payload["account"] as? String ?? "").isEmpty
-            let hasDuration = (payload["videoDuration"] as? Double ?? 0) > 0
-            let hasCaption = (payload["caption"] as? String ?? "").count >= 12
-            if (hasMediaKey || (hasAccount && (hasDuration || hasCaption))) &&
-                unmatchedObservations.count < 1_000 {
-                unmatchedObservations[id] = payload
+        guard let event = payload["event"] as? String,
+              ["impression", "visible", "watch", "interaction", "relationship"].contains(event),
+              let rawID = payload["observationId"] as? String,
+              let observationUUID = UUID(uuidString: rawID) else { return }
+        let id = observationUUID.uuidString
+        if event == "relationship" {
+            let link = payload["permalink"] as? String ?? ""
+            guard store?.posts.contains(where: {
+                $0.observationId == id || (!link.isEmpty && $0.permalink == link)
+            }) == true else { return }
+        }
+        // Retain identification fields only. Never cache seconds, actions or comment text
+        // for replay: retries must enrich a record without counting anything twice.
+        var identity = unmatchedObservations[id] ?? [:]
+        for key in ["observationId", "permalink", "mediaKeys", "account", "caption", "hashtags",
+                    "videoDuration", "isVideo", "surface", "label", "relationship"] {
+            if let value = payload[key] {
+                if let text = value as? String, text.isEmpty, identity[key] != nil { continue }
+                identity[key] = value
             }
-        } else if let id = payload["observationId"] as? String {
-            unmatchedObservations.removeValue(forKey: id)
+        }
+        identity["observationId"] = id
+        // A prior recovery can be reused for the small visible-time/watch messages.
+        if (identity["permalink"] as? String ?? "").isEmpty,
+           let saved = store?.posts.first(where: { $0.observationId == id }), !saved.permalink.isEmpty {
+            identity["permalink"] = saved.permalink
+        }
+        let resolution = resolveMetadata(identity)
+        var merged = payload
+        merged["observationId"] = id
+        if let link = identity["permalink"] as? String, !link.isEmpty { merged["permalink"] = link }
+        if let metadata = resolution.metadata { merged = enriched(merged, with: metadata) }
+        if (merged["permalink"] as? String ?? "").isEmpty {
+            rememberPending(id, identity: identity, reason: resolution.reason)
+        } else {
+            if unmatchedObservations[id] != nil { log(.matched) }
+            removePending(id)
         }
         store?.record(merged)
+    }
+
+    private func rememberPending(_ id: String, identity: [String: Any], reason: CaptureDiagnosticEvent) {
+        if unmatchedObservations[id] == nil {
+            if pendingOrder.count >= 1_000 {
+                removePending(pendingOrder[0])
+                log(.pendingEvicted)
+            }
+            pendingOrder.append(id)
+        }
+        unmatchedObservations[id] = identity
+        if pendingReasons[id] != reason { log(reason) }
+        pendingReasons[id] = reason
+        if pendingLinkCount != pendingOrder.count { pendingLinkCount = pendingOrder.count }
+    }
+
+    private func removePending(_ id: String) {
+        unmatchedObservations.removeValue(forKey: id)
+        pendingReasons.removeValue(forKey: id)
+        pendingOrder.removeAll { $0 == id }
+        if pendingLinkCount != pendingOrder.count { pendingLinkCount = pendingOrder.count }
+    }
+
+    private func scheduleIdentityRetry() {
+        // One response can contain hundreds of posts. Coalesce its callbacks so
+        // the main thread does not rematch the entire pending cache for each one.
+        guard pendingIdentityRetry == nil else { return }
+        pendingIdentityRetry = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 250_000_000) }
+            catch { return }
+            guard let self else { return }
+            self.pendingIdentityRetry = nil
+            self.retryPendingIdentities()
+        }
+    }
+
+    private func retryPendingIdentities() {
+        pendingIdentityRetry?.cancel()
+        pendingIdentityRetry = nil
+        guard recordingAllowed else { return }
+        var recovered = 0
+        for id in pendingOrder {
+            guard let identity = unmatchedObservations[id] else { continue }
+            // A deleted result must never be recreated by a metadata retry.
+            guard store?.posts.contains(where: { $0.observationId == id }) == true else {
+                removePending(id)
+                continue
+            }
+            let resolution = resolveMetadata(identity)
+            if let metadata = resolution.metadata {
+                var update = enriched(identity, with: metadata)
+                update["event"] = "relationship"
+                store?.record(update)
+                removePending(id)
+                recovered += 1
+            } else if pendingReasons[id] != resolution.reason {
+                pendingReasons[id] = resolution.reason
+                log(resolution.reason)
+            }
+        }
+        if recovered > 0 { log(.retryFinished, count: recovered) }
+    }
+
+    private func removeMetadata(_ code: String) {
+        guard let old = metadataByCode.removeValue(forKey: code) else { return }
+        for key in validatedKeys(old["mediaKeys"]) {
+            codesByMediaKey[key]?.remove(code)
+            if codesByMediaKey[key]?.isEmpty == true { codesByMediaKey.removeValue(forKey: key) }
+        }
+        if let account = old["account"] as? String {
+            let key = account.lowercased()
+            codesByAccount[key]?.remove(code)
+            if codesByAccount[key]?.isEmpty == true { codesByAccount.removeValue(forKey: key) }
+        }
+    }
+
+    private func log(_ event: CaptureDiagnosticEvent, count: Int? = nil) {
+        guard diagnosticLogging else { return }
+        let now = Date()
+        // Rate limit repeating event types, including missing-link reports across posts.
+        if let previous = diagnosticTimes[event], now.timeIntervalSince(previous) < 5 { return }
+        diagnosticTimes[event] = now
+        diagnosticEntries.append(CaptureDiagnosticEntry(id: UUID(), at: now, event: event, count: count))
+        if diagnosticEntries.count > 250 { diagnosticEntries.removeFirst(diagnosticEntries.count - 250) }
+    }
+
+    func setDiagnosticLogging(_ enabled: Bool) {
+        diagnosticLogging = enabled
+        if !enabled { clearDiagnostics() } else { log(.started) }
+    }
+
+    func clearDiagnostics() {
+        diagnosticEntries.removeAll()
+        diagnosticTimes.removeAll()
+        try? FileManager.default.removeItem(at: diagnosticURL)
+    }
+
+    func exportDiagnostics() throws -> URL {
+        struct Report: Encodable {
+            let formatVersion: Int
+            let appVersion: String
+            let exportedAt: Date
+            let pendingIdentities: Int
+            let metadataEntries: Int
+            let entries: [CaptureDiagnosticEntry]
+        }
+        let report = Report(formatVersion: 1,
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+            exportedAt: Date(), pendingIdentities: pendingLinkCount,
+            metadataEntries: metadataCount, entries: diagnosticEntries)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(report).write(to: diagnosticURL, options: [.atomic, .completeFileProtection])
+        return diagnosticURL
     }
 
     private func validatedKeys(_ raw: Any?) -> [String] {
@@ -223,10 +420,10 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
         }))
     }
 
-    private func metadataFor(_ payload: [String: Any]) -> [String: Any]? {
+    private func resolveMetadata(_ payload: [String: Any]) -> (metadata: [String: Any]?, reason: CaptureDiagnosticEvent) {
         if let permalink = payload["permalink"] as? String,
            let code = postCode(permalink) {
-            return metadataByCode[code]
+            return (metadataByCode[code], .metadataMissing)
         }
         let mediaMatches = Set(validatedKeys(payload["mediaKeys"]).flatMap {
             codesByMediaKey[$0] ?? []
@@ -271,12 +468,18 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
                 }) != true
             })
         }
-        guard matches.count == 1, let code = matches.first,
-              let metadata = metadataByCode[code] else { return nil }
+        if matches.count > 1 { return (nil, .ambiguous) }
+        guard let code = matches.first, let metadata = metadataByCode[code] else {
+            if !mediaMatches.isEmpty { return (nil, .accountMismatch) }
+            let hasClues = !validatedKeys(payload["mediaKeys"]).isEmpty ||
+                (!account.isEmpty && ((payload["videoDuration"] as? Double ?? 0) > 0 ||
+                    (payload["caption"] as? String ?? "").count >= 12))
+            return (nil, hasClues ? .metadataMissing : .noIdentity)
+        }
         let metadataAccount = metadata["account"] as? String ?? ""
         guard account.isEmpty || metadataAccount.isEmpty ||
-              account.caseInsensitiveCompare(metadataAccount) == .orderedSame else { return nil }
-        return metadata
+              account.caseInsensitiveCompare(metadataAccount) == .orderedSame else { return (nil, .accountMismatch) }
+        return (metadata, .matched)
     }
 
     private func enriched(_ payload: [String: Any], with metadata: [String: Any]) -> [String: Any] {
@@ -351,6 +554,9 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        log(.navigation, count: pendingLinkCount)
+        pendingIdentityRetry?.cancel()
+        pendingIdentityRetry = nil
         isLoading = true
         status = "Loading Instagram…"
         recorderReady = false
@@ -361,6 +567,10 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
         codesByMediaKey.removeAll()
         codesByAccount.removeAll()
         unmatchedObservations.removeAll()
+        pendingReasons.removeAll()
+        pendingOrder.removeAll()
+        metadataOrder.removeAll()
+        pendingLinkCount = 0
         canGoBack = webView.canGoBack
     }
 
@@ -372,6 +582,7 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        log(.processRestart)
         status = "Instagram's browser process restarted · reloading"
         recorderReady = false
         webView.reload()
@@ -381,11 +592,13 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
                  withError error: Error) {
         isLoading = false
         status = "Could not load Instagram: \(error.localizedDescription)"
+        log(.navigationFailed)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         isLoading = false
         status = "Page error: \(error.localizedDescription)"
+        log(.navigationFailed)
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,

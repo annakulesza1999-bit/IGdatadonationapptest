@@ -3,8 +3,8 @@
    password fields, cookies, messages, or request headers. */
 (() => {
   if (!["instagram.com", "www.instagram.com"].includes(location.hostname)) return;
-  if (window.__instagramCaptureObserverV7) return;
-  window.__instagramCaptureObserverV7 = true;
+  if (window.__instagramCaptureObserverV8) return;
+  window.__instagramCaptureObserverV8 = true;
   window.__feedWindowEnabled = false;
 
   const cards = new Map();
@@ -374,15 +374,18 @@
           buckets: new Set(), unsentBuckets: new Set()
         });
       } else {
-        const oldAccount = existing.account;
-        const oldLink = existing.permalink;
         if (permalink) existing.permalink = permalink;
         if (account) existing.account = account;
         if (fingerprint) existing.fingerprint = fingerprint;
         existing.mediaKeys = [...new Set([...existing.mediaKeys, ...keys])].slice(-20);
+        const details = dataFor(existing, true);
+        const signature = JSON.stringify(details);
         if (window.__feedWindowEnabled && existing.announced &&
-            (existing.account !== oldAccount || existing.permalink !== oldLink)) {
-          send({ event: "relationship", ...dataFor(existing, true) });
+            signature !== existing.detailSignature) {
+          // Captions, duration and media IDs often arrive after the first impression.
+          // Metadata-only updates must never add viewing time or replay an action.
+          send({ event: "relationship", ...details });
+          existing.detailSignature = signature;
         }
       }
     }
@@ -478,7 +481,9 @@
       if (state.since == null) state.since = now;
       if (state.announced && state.lastTick == null) state.lastTick = now;
       if (!state.announced && now - state.since >= 700) {
-        send({ event: "impression", ...dataFor(state, true) });
+        const details = dataFor(state, true);
+        send({ event: "impression", ...details });
+        state.detailSignature = JSON.stringify(details);
         state.announced = true;
         state.lastTick = now;
       }
@@ -516,7 +521,13 @@
   window.__instagramCaptureSetEnabled = enabled => {
     const wasEnabled = window.__feedWindowEnabled;
     window.__feedWindowEnabled = !!enabled;
-    if (wasEnabled !== window.__feedWindowEnabled) lastStatus = 0;
+    if (wasEnabled !== window.__feedWindowEnabled) {
+      lastStatus = 0;
+      if (window.__feedWindowEnabled) {
+        // Re-send identification clues after Results/backgrounding, not impressions.
+        for (const state of cards.values()) state.detailSignature = null;
+      }
+    }
     safeTick();
     return window.__feedWindowEnabled;
   };
