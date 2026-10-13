@@ -68,6 +68,7 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
     private var pendingReasons: [String: CaptureDiagnosticEvent] = [:]
     private var pendingOrder: [String] = []
     private var metadataOrder: [String] = []
+    private var pendingIdentityRetry: Task<Void, Never>?
     private var diagnosticURL: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("instagram-capture-diagnostics.json")
     }
@@ -223,7 +224,7 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
                         "observationId": post.observationId, "permalink": permalink]
                     store?.record(enriched(observation, with: payload))
                 }
-                retryPendingIdentities()
+                scheduleIdentityRetry()
             }
             return
         }
@@ -318,7 +319,22 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
         if pendingLinkCount != pendingOrder.count { pendingLinkCount = pendingOrder.count }
     }
 
+    private func scheduleIdentityRetry() {
+        // One response can contain hundreds of posts. Coalesce its callbacks so
+        // the main thread does not rematch the entire pending cache for each one.
+        guard pendingIdentityRetry == nil else { return }
+        pendingIdentityRetry = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 250_000_000) }
+            catch { return }
+            guard let self else { return }
+            self.pendingIdentityRetry = nil
+            self.retryPendingIdentities()
+        }
+    }
+
     private func retryPendingIdentities() {
+        pendingIdentityRetry?.cancel()
+        pendingIdentityRetry = nil
         guard recordingAllowed else { return }
         var recovered = 0
         for id in pendingOrder {
@@ -539,6 +555,8 @@ final class InstagramWebSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         log(.navigation, count: pendingLinkCount)
+        pendingIdentityRetry?.cancel()
+        pendingIdentityRetry = nil
         isLoading = true
         status = "Loading Instagram…"
         recorderReady = false
